@@ -1,160 +1,117 @@
 name: Generate code scanning query lists
-
-# **What it does**: This workflow is currently run manually approximately every two weeks as part
-#      of the release process for the CodeQL CLI. We hope to automate this in the future
-#   When run, this workflow generates updated query lists with data from the codeql
-#   repository, and creates a pull request if there are updates.
-# **Why we have it**: So we can automate CodeQL query tables and show code scanning users the built in queries.
-# **Who does it impact**: Anyone making CodeQL query suite changes in `github/codeql`, and wanting to get them published on the docs site.
-
-on:
+'on':
   workflow_dispatch:
     inputs:
       SOURCE_BRANCH:
-        description: 'Branch to pull the source files from in the codeql repo (for example codeql-cli-2.x.x).'
+        description: Branch to pull the source files from in the codeql repo (for
+          example codeql-cli-2.x.x).
         type: string
         required: true
-        default: 'main'
-
+        default: main
   pull_request:
     paths:
-      - .github/workflows/generate-code-scanning-query-lists.yml
-      - src/code-scanning/scripts/generate-code-scanning-query-list.ts
-      - .github/actions/install-cocofix/action.yml
-
+    - .github/workflows/generate-code-scanning-query-lists.yml
+    - src/code-scanning/scripts/generate-code-scanning-query-list.ts
+    - .github/actions/install-cocofix/action.yml
 permissions:
   contents: write
   pull-requests: write
-
 jobs:
   generate-query-lists:
     if: github.repository == 'github/docs-internal'
-    runs-on: ubuntu-20.04-xl
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository code
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+    - name: Checkout repository code
+      uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+    - uses: ./.github/actions/node-npm-setup
+    - name: Checkout codeql repo
+      uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+      with:
+        repository: github/codeql
+        path: codeql
+        ref: ${{ inputs.SOURCE_BRANCH || 'main' }}
+    - name: Get the codeql SHA being synced
+      id: codeql
+      run: 'cd codeql
 
-      - uses: ./.github/actions/node-npm-setup
+        OPENAPI_COMMIT_SHA=$(git rev-parse HEAD)
 
-      - name: Checkout codeql repo
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
-        with:
-          repository: github/codeql
-          path: codeql
-          ref: ${{ inputs.SOURCE_BRANCH || 'main' }}
+        echo "OPENAPI_COMMIT_SHA=$OPENAPI_COMMIT_SHA" >> $GITHUB_OUTPUT
 
-      - name: Get the codeql SHA being synced
-        id: codeql
-        run: |
-          cd codeql
-          OPENAPI_COMMIT_SHA=$(git rev-parse HEAD)
-          echo "OPENAPI_COMMIT_SHA=$OPENAPI_COMMIT_SHA" >> $GITHUB_OUTPUT
-          echo "Copied files from github/codeql repo. Commit SHA: $OPENAPI_COMMIT_SHA"
+        echo "Copied files from github/codeql repo. Commit SHA: $OPENAPI_COMMIT_SHA"
 
-      - name: Download CodeQL CLI
-        # Look under the `codeql` directory, as this is where we checked out the `github/codeql` repo
-        uses: ./codeql/.github/actions/fetch-codeql
+        '
+    - name: Download CodeQL CLI
+      uses: ./codeql/.github/actions/fetch-codeql
+    - name: Test CodeQL CLI Download
+      run: codeql --version
+    - name: Start CodeQL CLI server in the background
+      run: 'codeql execute cli-server &
 
-      - name: Test CodeQL CLI Download
-        run: codeql --version
+        sleep 3
 
-      # "Server for running multiple commands while avoiding repeated JVM initialization."
-      # Having started this should speed up the execution of the various
-      # CLI calls of the executable.
-      - name: Start CodeQL CLI server in the background
-        run: |
-          codeql execute cli-server &
-          sleep 3
-          codeql --version
+        codeql --version
 
-      - uses: ./.github/actions/install-cocofix
-        with:
-          token: ${{ secrets.DOCS_BOT_PAT_WORKFLOW }}
+        '
+    - uses: ./.github/actions/install-cocofix
+      with:
+        token: ${{ secrets.DOCS_BOT_PAT_WORKFLOW }}
+    - name: Lint the code (eslint)
+      if: ${{ github.event_name == 'pull_request' }}
+      env:
+        PATH: $PATH:${{ github.workspace }}/node_modules/.bin
+      run: 'eslint --no-ignore src/code-scanning/scripts/generate-code-scanning-query-list.ts
 
-      - name: Lint the code (eslint)
-        if: ${{ github.event_name == 'pull_request' }}
-        env:
-          PATH: '$PATH:${{ github.workspace }}/node_modules/.bin'
-        run: |
-          eslint --no-ignore src/code-scanning/scripts/generate-code-scanning-query-list.ts
+        '
+    - name: Lint the code (tsc)
+      if: ${{ github.event_name == 'pull_request' }}
+      env:
+        PATH: $PATH:${{ github.workspace }}/node_modules/.bin
+      run: 'tsc --noEmit --project src/code-scanning/scripts/tsconfig.json
 
-      - name: Lint the code (tsc)
-        if: ${{ github.event_name == 'pull_request' }}
-        env:
-          PATH: '$PATH:${{ github.workspace }}/node_modules/.bin'
-        run: |
-          tsc --noEmit --project src/code-scanning/scripts/tsconfig.json
+        '
+    - name: Build code scanning query list
+      run: "for lang in \"cpp\" \"csharp\" \"go\" \"java\" \"javascript\" \"python\"\
+        \ \"ruby\" \"swift\"; do\n  echo \"Generating code scanning query list for\
+        \ $lang\"\n  npm run generate-code-scanning-query-list -- \\\n    --verbose\
+        \ \\\n    --codeql-path codeql \\\n    --codeql-dir codeql \\\n    -o data/reusables/code-scanning/codeql-query-tables/$lang.md\
+        \ \\\n    $lang\ndone\n"
+    - name: Insight into diff
+      run: 'git diff
 
-      - name: Build code scanning query list
-        run: |
-          for lang in "cpp" "csharp" "go" "java" "javascript" "python" "ruby" "swift"; do
-            echo "Generating code scanning query list for $lang"
-            npm run generate-code-scanning-query-list -- \
-              --verbose \
-              --codeql-path codeql \
-              --codeql-dir codeql \
-              -o data/reusables/code-scanning/codeql-query-tables/$lang.md \
-              $lang
-          done
-
-      - name: Insight into diff
-        run: |
-          git diff
-
-      - name: Create pull request
-        env:
-          GITHUB_TOKEN: ${{ secrets.DOCS_BOT_PAT_READPUBLICKEY }}
-          DRY_RUN: ${{ github.event_name == 'pull_request'}}
-        run: |
-
-          # When we started, we downloaded the CodeQL CLI here in this workflow.
-          # We have no intention of checking that in but we also don't want
-          # `git status ...` to show it as an untracked file.
-          rm -fr ./codeql
-
-          # If nothing to commit, exit now. It's fine. No orphans.
-          changes=$(git diff --name-only | wc -l)
-          untracked=$(git status --untracked-files --short | wc -l)
-          if [[ $changes -eq 0 ]] && [[ $untracked -eq 0 ]]; then
-            echo "There are no changes to commit after running the generation and conversion scripts. Exiting..."
-            exit 0
-          fi
-
-          git config --global user.name "docs-bot"
-          git config --global user.email "77750099+docs-bot@users.noreply.github.com"
-
-          branchname=codeql-query-tables-${{ steps.codeql.outputs.OPENAPI_COMMIT_SHA }}
-
-          # Exit if the branch already exists. Since the actions/checkout fetch-depth is 1,
-          # it doesn't "know" about branches locally, so we need to manually list them.
-          branchExists=$(git ls-remote --heads origin refs/heads/$branchname | wc -l)
-
-          # When run on a pull_request, we're just testing the tooling.
-          # Exit before it actually pushes the possible changes.
-          if [ "$DRY_RUN" = "true" ]; then
-            echo "Dry-run mode when run in a pull request"
-            echo "See the 'Insight into diff' step for the changes it would create PR about."
-            exit 0
-          fi
-
-          if [ $branchExists -ne 0 ]; then
-            echo "Branch $branchname already exists in the remote repository."
-            exit 0
-          else
-            git checkout -b $branchname
-          fi
-
-          git add data/reusables/code-scanning/codeql-query-tables
-          git commit -m "Update CodeQL query tables"
-          git push origin $branchname
-
-          echo "Creating pull request..."
-          gh pr create \
-            --title "Update CodeQL query tables" \
-            --repo github/docs-internal \
-           --label "codeql-query-tables,skip FR board,ready-for-doc-review" \
-            --body '👋 humans. This PR updates the **CodeQL query table reusables** with the latest changes in preparation for the next **CodeQL CLI** release.
-
-            No action is required from the first responder for the Docs content team. This PR will be reviewed and merged by the Code scanning and GHAS focus team as part of the next release of CodeQL CLI. (Synced from codeql@${{ steps.codeql.outputs.OPENAPI_COMMIT_SHA }})
-
-            If CI does not pass or other problems arise, contact #docs-engineering on slack.'
+        '
+    - name: Create pull request
+      env:
+        GITHUB_TOKEN: ${{ secrets.DOCS_BOT_PAT_READPUBLICKEY }}
+        DRY_RUN: ${{ github.event_name == 'pull_request'}}
+      run: "\n# When we started, we downloaded the CodeQL CLI here in this workflow.\n\
+        # We have no intention of checking that in but we also don't want\n# `git\
+        \ status ...` to show it as an untracked file.\nrm -fr ./codeql\n\n# If nothing\
+        \ to commit, exit now. It's fine. No orphans.\nchanges=$(git diff --name-only\
+        \ | wc -l)\nuntracked=$(git status --untracked-files --short | wc -l)\nif\
+        \ [[ $changes -eq 0 ]] && [[ $untracked -eq 0 ]]; then\n  echo \"There are\
+        \ no changes to commit after running the generation and conversion scripts.\
+        \ Exiting...\"\n  exit 0\nfi\n\ngit config --global user.name \"docs-bot\"\
+        \ngit config --global user.email \"77750099+docs-bot@users.noreply.github.com\"\
+        \n\nbranchname=codeql-query-tables-${{ steps.codeql.outputs.OPENAPI_COMMIT_SHA\
+        \ }}\n\n# Exit if the branch already exists. Since the actions/checkout fetch-depth\
+        \ is 1,\n# it doesn't \"know\" about branches locally, so we need to manually\
+        \ list them.\nbranchExists=$(git ls-remote --heads origin refs/heads/$branchname\
+        \ | wc -l)\n\n# When run on a pull_request, we're just testing the tooling.\n\
+        # Exit before it actually pushes the possible changes.\nif [ \"$DRY_RUN\"\
+        \ = \"true\" ]; then\n  echo \"Dry-run mode when run in a pull request\"\n\
+        \  echo \"See the 'Insight into diff' step for the changes it would create\
+        \ PR about.\"\n  exit 0\nfi\n\nif [ $branchExists -ne 0 ]; then\n  echo \"\
+        Branch $branchname already exists in the remote repository.\"\n  exit 0\n\
+        else\n  git checkout -b $branchname\nfi\n\ngit add data/reusables/code-scanning/codeql-query-tables\n\
+        git commit -m \"Update CodeQL query tables\"\ngit push origin $branchname\n\
+        \necho \"Creating pull request...\"\ngh pr create \\\n  --title \"Update CodeQL\
+        \ query tables\" \\\n  --repo github/docs-internal \\\n --label \"codeql-query-tables,skip\
+        \ FR board,ready-for-doc-review\" \\\n  --body '\U0001F44B humans. This PR\
+        \ updates the **CodeQL query table reusables** with the latest changes in\
+        \ preparation for the next **CodeQL CLI** release.\n\n  No action is required\
+        \ from the first responder for the Docs content team. This PR will be reviewed\
+        \ and merged by the Code scanning and GHAS focus team as part of the next\
+        \ release of CodeQL CLI. (Synced from codeql@${{ steps.codeql.outputs.OPENAPI_COMMIT_SHA\
+        \ }})\n\n  If CI does not pass or other problems arise, contact #docs-engineering\
+        \ on slack.'\n"
